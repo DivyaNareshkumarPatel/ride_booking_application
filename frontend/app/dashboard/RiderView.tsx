@@ -13,11 +13,11 @@ interface Suggestion {
 }
 
 export function RiderView() {
-    const { 
+    const {
         pickup, destination, status, otp, rideId, estimatedFare, driverName,
-        setPickup, setDestination, setStatus, setRideId, setOtp, setEstimatedFare, resetRide 
+        setPickup, setDestination, setStatus, setRideId, setOtp, setEstimatedFare, resetRide
     } = useRideStore();
-    
+
     const [pickupQuery, setPickupQuery] = useState(pickup?.address || '');
     const [destQuery, setDestQuery] = useState(destination?.address || '');
     const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
@@ -179,14 +179,14 @@ export function RiderView() {
                 )}
 
                 {status === 'completed' ? (
-                    <button 
+                    <button
                         onClick={resetRide}
                         className="w-full bg-black text-white py-3.5 rounded-xl text-sm font-semibold hover:bg-gray-800 transition-colors"
                     >
                         Done
                     </button>
                 ) : (
-                    <button 
+                    <button
                         onClick={handleCancelRide}
                         className="w-full bg-red-50 text-red-600 py-3.5 rounded-xl text-sm font-semibold hover:bg-red-100 transition-colors"
                     >
@@ -227,7 +227,7 @@ export function RiderView() {
                                 className="w-full bg-gray-50 px-4 py-3 rounded-xl text-sm font-medium text-gray-900 border border-transparent focus:bg-white focus:border-black focus:ring-1 focus:ring-black outline-none transition-all"
                             />
                             {!pickup && (
-                                <button 
+                                <button
                                     onClick={handleGetCurrentLocation}
                                     className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-semibold text-blue-600 hover:text-blue-700"
                                 >
@@ -269,7 +269,7 @@ export function RiderView() {
                     )}
                 </div>
 
-                <button 
+                <button
                     disabled={!pickup || !destination || loading}
                     onClick={handleRequestRide}
                     className="w-full mt-6 bg-black text-white py-3.5 rounded-xl text-sm font-semibold hover:bg-gray-800 transition-colors disabled:bg-gray-300 disabled:cursor-not-allowed flex items-center justify-center gap-2"

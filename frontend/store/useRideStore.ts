@@ -12,8 +12,8 @@ interface RideState {
     driverName: string | null;
     riderName: string | null;
     driverLocation: [number, number] | null;
-    
-    // Driver side
+
+
     incomingRequest: any | null;
 
     setPickup: (pickup: { address: string, coords: [number, number] } | null) => void;

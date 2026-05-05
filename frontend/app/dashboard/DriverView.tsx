@@ -12,43 +12,66 @@ export function DriverView() {
     const [loading, setLoading] = useState(false);
 
     const socket = useSocket();
-    const { 
+
+    const {
         incomingRequest, status, rideId, riderName,
-        setIncomingRequest, setStatus, setRideId, resetRide 
+        setIncomingRequest, setStatus, setRideId, resetRide
     } = useRideStore();
 
-    // Location update effect
     useEffect(() => {
-        let watchId: number;
-        if (isOnline && socket) {
-            if ("geolocation" in navigator) {
-                // Get initial position immediately
-                navigator.geolocation.getCurrentPosition((pos) => {
-                    socket.emit('updateLocation', {
-                        lat: pos.coords.latitude,
-                        lng: pos.coords.longitude
-                    });
-                }, (err) => console.warn('Initial geolocation error:', err.message));
+        let intervalId: NodeJS.Timeout;
 
-                watchId = navigator.geolocation.watchPosition((pos) => {
-                    socket.emit('updateLocation', {
-                        lat: pos.coords.latitude,
-                        lng: pos.coords.longitude
-                    });
-                }, (err) => {
-                    console.warn('Geolocation watch error:', err.message);
-                }, {
-                    enableHighAccuracy: true,
-                    maximumAge: 0,
-                    timeout: 5000
-                });
-            }
+        if (isOnline && socket) {
+            console.log("Driver is online and socket is connected. Starting location pings...");
+
+            const sendLocationAndCheckRides = () => {
+                console.log("--> Requesting browser location...");
+
+                if ("geolocation" in navigator) {
+                    navigator.geolocation.getCurrentPosition(
+                        (pos) => {
+                            console.log("Pinging backend for rides at:", pos.coords.latitude, pos.coords.longitude);
+                            socket.emit('updateLocation', {
+                                lat: pos.coords.latitude,
+                                lng: pos.coords.longitude
+                            });
+                        },
+                        (err) => {
+                            console.warn('Geolocation error:', err.message);
+                        },
+                        { enableHighAccuracy: true, timeout: 10000, maximumAge: 5000 }
+                    );
+                } else {
+                    console.error("Geolocation is not supported by this browser.");
+                }
+            };
+
+            sendLocationAndCheckRides();
+
+            intervalId = setInterval(sendLocationAndCheckRides, 5000);
         }
+
         return () => {
-            if (watchId) navigator.geolocation.clearWatch(watchId);
+            if (intervalId) clearInterval(intervalId);
         };
     }, [isOnline, socket]);
 
+    useEffect(() => {
+        if (!socket) return;
+
+        const handleNewRequest = (rideData: any) => {
+            if (isOnline) {
+                console.log("BINGO! Ride received:", rideData);
+                setIncomingRequest(rideData);
+            }
+        };
+
+        socket.on('newRideRequest', handleNewRequest);
+
+        return () => {
+            socket.off('newRideRequest', handleNewRequest);
+        };
+    }, [socket, isOnline, setIncomingRequest]);
     const handleAccept = async () => {
         if (!incomingRequest) return;
         setLoading(true);
@@ -106,7 +129,6 @@ export function DriverView() {
         }
     };
 
-    // Incoming Request Modal/Overlay
     if (incomingRequest && status === 'idle') {
         return (
             <div className="absolute inset-x-0 bottom-8 z-50 flex justify-center px-4">
@@ -126,13 +148,13 @@ export function DriverView() {
                         </div>
                     </div>
                     <div className="flex gap-3">
-                        <button 
+                        <button
                             onClick={() => setIncomingRequest(null)}
                             className="flex-1 py-3 text-sm font-bold text-gray-500 hover:bg-gray-100 rounded-xl transition-colors"
                         >
                             Decline
                         </button>
-                        <button 
+                        <button
                             onClick={handleAccept}
                             disabled={loading}
                             className="flex-[2] bg-black text-white py-3 rounded-xl text-sm font-bold hover:bg-gray-800 transition-colors shadow-lg shadow-black/20"
@@ -144,8 +166,6 @@ export function DriverView() {
             </div>
         );
     }
-
-    // Active Ride View
     if (status !== 'idle' && status !== 'cancelled') {
         return (
             <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-40 w-full max-w-sm px-4 pointer-events-auto">
@@ -171,7 +191,7 @@ export function DriverView() {
 
                     {status === 'arrived' && (
                         <div className="space-y-4">
-                            <input 
+                            <input
                                 type="text"
                                 placeholder="Enter OTP"
                                 value={otpInput}
@@ -198,14 +218,6 @@ export function DriverView() {
         );
     }
 
-    const toggleOnline = () => {
-        const newOnline = !isOnline;
-        setIsOnline(newOnline);
-        if (!newOnline && socket) {
-            socket.emit('goOffline');
-        }
-    };
-
     return (
         <div className="absolute bottom-8 left-1/2 -translate-x-1/2 z-40 w-full max-w-sm px-4 pointer-events-auto">
             <div className="bg-white p-2 rounded-3xl shadow-[0_8px_30px_rgb(0,0,0,0.12)] border border-gray-100 flex flex-col items-center">
@@ -220,7 +232,10 @@ export function DriverView() {
                 </div>
 
                 <button
-                    onClick={toggleOnline}
+                    onClick={() => {
+                        setIsOnline(!isOnline);
+                        if (isOnline) setIncomingRequest(null);
+                    }}
                     className={`w-full py-4 rounded-2xl text-lg font-bold transition-all duration-300 ${isOnline
                         ? 'bg-red-500 text-white hover:bg-red-600 shadow-md'
                         : 'bg-[#FFCC00] text-black hover:bg-[#e6b800] shadow-md hover:-translate-y-0.5'
