@@ -14,6 +14,71 @@ export class RidesService {
         private gateway: RidesGateway,
     ) { }
 
+    async findPendingRidesNearLocation(lat: number, lng: number, radiusKm: number = 50) {
+        const rides: any = await this.prisma.$queryRaw`
+            SELECT id, pickup_address, dropoff_address, estimated_fare, 
+            ST_Distance(pickup_location, ST_SetSRID(ST_MakePoint(${lng}, ${lat}), 4326)::geography) as distance
+            FROM rides
+            WHERE status = 'requested'
+            AND ST_DWithin(pickup_location, ST_SetSRID(ST_MakePoint(${lng}, ${lat}), 4326)::geography, ${radiusKm * 1000})
+            ORDER BY distance ASC
+            LIMIT 5
+        `;
+        return rides;
+    }
+
+    async findActiveRideByDriver(driverId: string) {
+        const rides: any = await this.prisma.$queryRaw`
+            SELECT id, rider_id, status FROM rides 
+            WHERE driver_id = CAST(${driverId} AS UUID) 
+            AND status IN ('accepted', 'arrived', 'ongoing')
+            LIMIT 1
+        `;
+        return rides.length > 0 ? rides[0] : null;
+    }
+
+    async getActiveRide(userId: string, role: string) {
+        const query = role === 'rider'
+            ? this.prisma.$queryRaw`
+                SELECT r.id, r.status, r.rider_id, r.driver_id, r.otp, r.estimated_fare, r.pickup_address, r.dropoff_address,
+                ST_X(r.pickup_location::geometry) AS pickup_lng, ST_Y(r.pickup_location::geometry) AS pickup_lat,
+                ST_X(r.dropoff_location::geometry) AS dropoff_lng, ST_Y(r.dropoff_location::geometry) AS dropoff_lat,
+                u.full_name as driver_name
+                FROM rides r
+                LEFT JOIN users u ON r.driver_id = u.id
+                WHERE r.rider_id = CAST(${userId} AS UUID) 
+                AND r.status NOT IN ('completed', 'cancelled')
+                ORDER BY r.requested_at DESC LIMIT 1`
+            : this.prisma.$queryRaw`
+                SELECT r.id, r.status, r.rider_id, r.driver_id, r.otp, r.estimated_fare, r.pickup_address, r.dropoff_address,
+                ST_X(r.pickup_location::geometry) AS pickup_lng, ST_Y(r.pickup_location::geometry) AS pickup_lat,
+                ST_X(r.dropoff_location::geometry) AS dropoff_lng, ST_Y(r.dropoff_location::geometry) AS dropoff_lat,
+                u.full_name as rider_name
+                FROM rides r
+                LEFT JOIN users u ON r.rider_id = u.id
+                WHERE r.driver_id = CAST(${userId} AS UUID) 
+                AND r.status NOT IN ('completed', 'cancelled')
+                ORDER BY r.requested_at DESC LIMIT 1`;
+
+        const rides: any = await query;
+        if (rides.length === 0) return null;
+
+        const ride = rides[0];
+        return {
+            ...ride,
+            pickup: {
+                address: ride.pickup_address,
+                coords: [ride.pickup_lat, ride.pickup_lng]
+            },
+            destination: {
+                address: ride.dropoff_address,
+                coords: [ride.dropoff_lat, ride.dropoff_lng]
+            },
+            driverName: ride.driver_name,
+            riderName: ride.rider_name
+        };
+    }
+
     async requestRide(riderId: string, dto: RequestRideDto) {
         const distanceKm = this.fareService.calculateDistance(
             dto.pickup_lat, dto.pickup_lng,
@@ -27,42 +92,63 @@ export class RidesService {
         pickup_location, dropoff_location, otp
       ) VALUES (
         CAST(${riderId} AS UUID), 'requested', ${estimatedFare}, ${dto.pickup_address}, ${dto.dropoff_address},
-        ST_SetSRID(ST_MakePoint(${dto.pickup_lng}, ${dto.pickup_lat}), 4326),
-        ST_SetSRID(ST_MakePoint(${dto.dropoff_lng}, ${dto.dropoff_lat}), 4326),
+        ST_SetSRID(ST_MakePoint(${dto.pickup_lng}, ${dto.pickup_lat}), 4326)::geography,
+        ST_SetSRID(ST_MakePoint(${dto.dropoff_lng}, ${dto.dropoff_lat}), 4326)::geography,
         ${otp}
       ) RETURNING id, status, estimated_fare;
     `;
         const newRideId = ride[0].id;
 
-        const nearbyDrivers = await this.locationService.findNearbyDrivers(
+        const nearbyDrivers: any[] = await this.locationService.findNearbyDrivers(
             dto.pickup_lat,
             dto.pickup_lng,
-            5
+            50 // Increased to 50km for better reliability during testing
         );
 
         if (nearbyDrivers.length === 0) {
-            await this.prisma.$queryRaw`UPDATE rides SET status = 'cancelled' WHERE id = CAST(${newRideId} AS UUID)`;
+            await this.prisma.$executeRaw`UPDATE rides SET status = 'cancelled' WHERE id = CAST(${newRideId} AS UUID)`;
             throw new NotFoundException('No drivers available in your area right now.');
         }
 
-        const topDrivers = nearbyDrivers.slice(0, 3);
+        // Filter and ping up to 10 drivers who are NOT on an active ride
+        let pingedCount = 0;
+        for (const driverData of nearbyDrivers) {
+            if (pingedCount >= 10) break;
 
-        topDrivers.forEach((driverData: any) => {
-            const driverId = driverData[0] as string;
-            this.gateway.notifyDriver(driverId, {
-                rideId: newRideId,
-                pickup_address: dto.pickup_address,
-                dropoff_address: dto.dropoff_address,
-                estimatedFare: estimatedFare,
-                distanceToPickup: driverData[1]
-            });
-        });
+            try {
+                const driverId = typeof driverData[0] === 'string' ? driverData[0] : driverData[0].toString();
+                
+                // Check if driver is already on a ride
+                const activeRide = await this.findActiveRideByDriver(driverId);
+                if (activeRide) {
+                    console.log(`Driver ${driverId} is already on an active ride, skipping.`);
+                    continue;
+                }
+
+                this.gateway.notifyDriver(driverId, {
+                    rideId: newRideId,
+                    pickup_address: dto.pickup_address,
+                    dropoff_address: dto.dropoff_address,
+                    estimatedFare: estimatedFare,
+                    distanceToPickup: driverData[1]
+                });
+                pingedCount++;
+            } catch (err) {
+                console.error(`Error processing driver ${driverData[0]}:`, err);
+                continue;
+            }
+        }
+
+        if (pingedCount === 0) {
+            await this.prisma.$executeRaw`UPDATE rides SET status = 'cancelled' WHERE id = CAST(${newRideId} AS UUID)`;
+            throw new NotFoundException('All nearby drivers are currently busy.');
+        }
 
         return {
             message: 'Ride requested successfully. Searching for drivers...',
             rideId: newRideId,
             estimatedFare,
-            driversPinged: topDrivers.length
+            driversPinged: pingedCount
         };
     }
 
@@ -70,7 +156,8 @@ export class RidesService {
         const affectedRows = await this.prisma.$executeRaw`
       UPDATE rides 
       SET driver_id = CAST(${driverId} AS UUID), 
-          status = 'accepted' 
+          status = 'accepted',
+          accepted_at = NOW()
       WHERE id = CAST(${rideId} AS UUID) 
         AND status = 'requested';
     `;
@@ -79,24 +166,31 @@ export class RidesService {
             throw new ConflictException('Ride is no longer available.');
         }
         const rideDetails: any = await this.prisma.$queryRaw`
-      SELECT id, rider_id, pickup_address, dropoff_address, estimated_fare, otp 
-      FROM rides WHERE id = CAST(${rideId} AS UUID);
+      SELECT r.id, r.rider_id, r.pickup_address, r.dropoff_address, r.estimated_fare, r.otp, u.full_name as driver_name
+      FROM rides r
+      JOIN users u ON u.id = CAST(${driverId} AS UUID)
+      WHERE r.id = CAST(${rideId} AS UUID);
     `;
         const ride = rideDetails[0];
 
         this.gateway.notifyRider(ride.rider_id, {
+            rideId,
             status: 'accepted',
             driverId: driverId,
+            driverName: ride.driver_name,
             otp: ride.otp,
             message: 'Your driver is on the way!'
         });
 
         return { message: 'You have successfully claimed this ride.', rideId };
     }
+
     async updateRideStatus(rideId: string, driverId: string, newStatus: string) {
         const updated = await this.prisma.$executeRaw`
       UPDATE rides 
-      SET status = ${newStatus} 
+      SET status = ${newStatus},
+          accepted_at = CASE WHEN ${newStatus} IN ('accepted', 'arrived', 'ongoing', 'completed') AND accepted_at IS NULL THEN NOW() ELSE accepted_at END,
+          ended_at = CASE WHEN ${newStatus} = 'completed' THEN NOW() ELSE ended_at END
       WHERE id = CAST(${rideId} AS UUID) 
         AND driver_id = CAST(${driverId} AS UUID);
     `;
@@ -109,6 +203,7 @@ export class RidesService {
       SELECT rider_id FROM rides WHERE id = CAST(${rideId} AS UUID);
     `;
         this.gateway.notifyRider(ride[0].rider_id, {
+            rideId,
             status: newStatus,
             message: `Ride status updated to: ${newStatus}`,
         });
@@ -134,6 +229,7 @@ export class RidesService {
 
         return { message: 'Ride completed successfully. You are back online.' };
     }
+
     async startRideWithOtp(rideId: string, driverId: string, otpInput: string) {
         const rideDetails: any = await this.prisma.$queryRaw`
       SELECT otp, rider_id, status FROM rides 
@@ -148,15 +244,23 @@ export class RidesService {
             throw new ConflictException('Ride must be accepted or arrived before starting.');
         }
 
-        if (ride.otp !== otpInput) {
+        const storedOtp = ride.otp ? ride.otp.toString().trim() : '';
+        const inputOtp = otpInput ? otpInput.toString().trim() : '';
+
+        if (!storedOtp || storedOtp !== inputOtp) {
             throw new UnauthorizedException('Invalid OTP. Cannot start ride.');
         }
-        await this.prisma.$queryRaw`
-      UPDATE rides SET status = 'in_progress' WHERE id = CAST(${rideId} AS UUID);
+        await this.prisma.$executeRaw`
+      UPDATE rides 
+      SET status = 'ongoing', 
+          started_at = NOW(),
+          accepted_at = CASE WHEN accepted_at IS NULL THEN NOW() ELSE accepted_at END
+      WHERE id = CAST(${rideId} AS UUID);
     `;
 
         this.gateway.notifyRider(ride.rider_id, {
-            status: 'in_progress',
+            rideId,
+            status: 'ongoing',
             message: 'OTP Verified. Your ride has started!'
         });
 
@@ -173,14 +277,14 @@ export class RidesService {
         if (rideDetails.length === 0) throw new NotFoundException('Ride not found.');
         const ride = rideDetails[0];
 
-        if (ride.status === 'in_progress' || ride.status === 'completed' || ride.status === 'cancelled') {
+        if (ride.status === 'ongoing' || ride.status === 'completed' || ride.status === 'cancelled') {
             throw new ConflictException(`Cannot cancel a ride that is ${ride.status}`);
         }
         if (role === 'rider' && ride.rider_id !== userId) throw new UnauthorizedException();
         if (role === 'driver' && ride.driver_id !== userId) throw new UnauthorizedException();
 
-        await this.prisma.$queryRaw`
-      UPDATE rides SET status = 'cancelled' WHERE id = CAST(${rideId} AS UUID);
+        await this.prisma.$executeRaw`
+      UPDATE rides SET status = 'cancelled', cancelled_at = NOW() WHERE id = CAST(${rideId} AS UUID);
     `;
 
         if (role === 'rider' && ride.driver_id) {

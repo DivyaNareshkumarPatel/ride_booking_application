@@ -10,7 +10,7 @@ export const useLogin = () => {
     return useMutation({
         mutationFn: loginApi,
         onSuccess: (data) => {
-            setAuth(data.access_token, data.userId, data.role);
+            setAuth(data.access_token, data.user.id, data.user.role);
             router.push('/dashboard');
         },
     });
@@ -23,7 +23,7 @@ export const useRegister = () => {
     return useMutation({
         mutationFn: registerApi,
         onSuccess: (data, variables) => {
-            setAuth(data.access_token, data.userId, data.role);
+            setAuth(data.access_token, data.user.id, data.user.role);
             router.push('/dashboard');
         },
     });

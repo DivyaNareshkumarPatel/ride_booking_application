@@ -8,10 +8,16 @@ interface AuthState {
     logout: () => void;
 }
 
+const getLocalStorageItem = (key: string) => {
+    if (typeof window === 'undefined') return null;
+    const value = localStorage.getItem(key);
+    return value === 'undefined' ? null : value;
+};
+
 export const useAuthStore = create<AuthState>((set) => ({
-    token: typeof window !== 'undefined' ? localStorage.getItem('token') : null,
-    userId: typeof window !== 'undefined' ? localStorage.getItem('userId') : null,
-    role: typeof window !== 'undefined' ? localStorage.getItem('role') as any : null,
+    token: getLocalStorageItem('token'),
+    userId: getLocalStorageItem('userId'),
+    role: getLocalStorageItem('role') as any,
 
     setAuth: (token, userId, role) => {
         localStorage.setItem('token', token);

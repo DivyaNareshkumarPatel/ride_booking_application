@@ -1,4 +1,4 @@
-import { Controller, Post, Body, UseGuards, Request, Param, UnauthorizedException } from '@nestjs/common';
+import { Controller, Post, Body, UseGuards, Request, Param, UnauthorizedException, Get } from '@nestjs/common';
 import { RidesService } from './rides.service';
 import { RequestRideDto } from './dto/request-ride.dto';
 import { AuthGuard } from '../auth/auth.guard';
@@ -7,6 +7,12 @@ import { StartRideDto } from './dto/start-ride.dto';
 @Controller('rides')
 export class RidesController {
     constructor(private readonly ridesService: RidesService) { }
+
+    @UseGuards(AuthGuard)
+    @Get('active')
+    async getActiveRide(@Request() req) {
+        return this.ridesService.getActiveRide(req.user.sub, req.user.role);
+    }
 
     @UseGuards(AuthGuard)
     @Post('request')
