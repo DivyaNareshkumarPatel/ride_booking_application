@@ -1,0 +1,86 @@
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+model drivers {
+  id               String                    @id @db.Uuid
+  vehicle_model    String?                   @db.VarChar(100)
+  vehicle_plate    String?                   @unique @db.VarChar(20)
+  is_available     Boolean?                  @default(false)
+  current_location Unsupported("geography")?
+  rating           Decimal?                  @default(5.0) @db.Decimal(3, 2)
+  is_on_trip       Boolean?                  @default(false)
+  users            users                     @relation(fields: [id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([current_location], map: "idx_driver_location", type: Gist)
+}
+
+/// This table is a partition table and requires additional setup for migrations. Visit https://pris.ly/d/partition-tables for more info.
+model ride_tracking {
+  id          BigInt                   @default(autoincrement())
+  ride_id     String                   @db.Uuid
+  coords      Unsupported("geography")
+  recorded_at DateTime                 @default(now()) @db.Timestamptz(6)
+
+  @@id([id, recorded_at])
+  @@index([ride_id], map: "idx_tracking_ride_id")
+}
+
+/// This table is a partition table and requires additional setup for migrations. Visit https://pris.ly/d/partition-tables for more info.
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model rides {
+  id                           String                   @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  rider_id                     String?                  @db.Uuid
+  driver_id                    String?                  @db.Uuid
+  status                       String?                  @default("requested") @db.VarChar(20)
+  pickup_location              Unsupported("geography")
+  dropoff_location             Unsupported("geography")
+  pickup_address               String?
+  dropoff_address              String?
+  estimated_fare               Decimal?                 @db.Decimal(10, 2)
+  actual_fare                  Decimal?                 @db.Decimal(10, 2)
+  surge_multiplier             Decimal?                 @default(1.0) @db.Decimal(3, 2)
+  distance_meters              Int?
+  requested_at                 DateTime                 @default(now()) @db.Timestamptz(6)
+  accepted_at                  DateTime?                @db.Timestamptz(6)
+  started_at                   DateTime?                @db.Timestamptz(6)
+  ended_at                     DateTime?                @db.Timestamptz(6)
+  cancelled_at                 DateTime?                @db.Timestamptz(6)
+  cancellation_reason          String?
+  otp                          String?                  @db.VarChar(4)
+  users_rides_driver_idTousers users?                   @relation("rides_driver_idTousers", fields: [driver_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  users_rides_rider_idTousers  users?                   @relation("rides_rider_idTousers", fields: [rider_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@id([id, requested_at])
+  @@index([driver_id], map: "idx_rides_driver")
+  @@index([rider_id], map: "idx_rides_rider")
+  @@index([status], map: "idx_rides_status")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model spatial_ref_sys {
+  srid      Int     @id
+  auth_name String? @db.VarChar(256)
+  auth_srid Int?
+  srtext    String? @db.VarChar(2048)
+  proj4text String? @db.VarChar(2048)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model users {
+  id                           String    @id @default(dbgenerated("uuid_generate_v4()")) @db.Uuid
+  full_name                    String    @db.VarChar(255)
+  email                        String    @unique @db.VarChar(255)
+  phone_number                 String    @unique @db.VarChar(20)
+  password_hash                String
+  role                         String?   @db.VarChar(10)
+  created_at                   DateTime? @default(now()) @db.Timestamptz(6)
+  drivers                      drivers?
+  rides_rides_driver_idTousers rides[]   @relation("rides_driver_idTousers")
+  rides_rides_rider_idTousers  rides[]   @relation("rides_rider_idTousers")
+}
